@@ -1,0 +1,330 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Z IT Solutions Brand Colors - Navy Blue Theme */
+    --background: 0 0% 98%;
+    --foreground: 215 25% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 15%;
+
+    /* Navy Blue Primary */
+    --primary: 213 50% 23%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Light Gray Secondary */
+    --secondary: 214 20% 96%;
+    --secondary-foreground: 213 50% 23%;
+
+    --muted: 214 15% 94%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 213 45% 30%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 20% 90%;
+    --input: 214 20% 90%;
+    --ring: 213 50% 23%;
+
+    --radius: 0.5rem;
+
+    /* Sidebar - Dark Navy */
+    --sidebar-background: 213 55% 18%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 0 0% 100%;
+    --sidebar-primary-foreground: 213 55% 18%;
+    --sidebar-accent: 213 50% 25%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 213 45% 25%;
+    --sidebar-ring: 213 50% 35%;
+
+    /* Custom Z IT Solutions tokens */
+    --navy: 213 50% 23%;
+    --navy-dark: 213 55% 18%;
+    --navy-light: 213 45% 30%;
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+
+    /* Enhanced Shadows */
+    --shadow-sm: 0 1px 2px 0 hsl(215 25% 15% / 0.05);
+    --shadow-md: 0 4px 6px -1px hsl(215 25% 15% / 0.08), 0 2px 4px -2px hsl(215 25% 15% / 0.06);
+    --shadow-lg: 0 10px 15px -3px hsl(215 25% 15% / 0.1), 0 4px 6px -4px hsl(215 25% 15% / 0.08);
+    --shadow-xl: 0 20px 25px -5px hsl(215 25% 15% / 0.1), 0 8px 10px -6px hsl(215 25% 15% / 0.1);
+  }
+
+  .dark {
+    --background: 215 25% 10%;
+    --foreground: 0 0% 98%;
+
+    --card: 215 25% 13%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 215 25% 13%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 213 70% 60%;
+    --primary-foreground: 215 25% 10%;
+
+    --secondary: 215 25% 18%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 215 25% 18%;
+    --muted-foreground: 215 16% 65%;
+
+    --accent: 213 60% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 215 25% 20%;
+    --input: 215 25% 20%;
+    --ring: 213 70% 60%;
+
+    --sidebar-background: 215 30% 8%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 213 70% 60%;
+    --sidebar-primary-foreground: 215 30% 8%;
+    --sidebar-accent: 215 25% 15%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 215 25% 18%;
+    --sidebar-ring: 213 70% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display font-semibold tracking-tight;
+  }
+}
+
+@layer components {
+  .kpi-card {
+    @apply bg-card rounded-xl border border-border p-6 shadow-sm transition-all duration-200 hover:shadow-md relative overflow-hidden;
+  }
+
+  .kpi-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, hsl(var(--primary)), hsl(var(--accent)));
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .kpi-card:hover::before {
+    opacity: 1;
+  }
+
+  .sidebar-item {
+    @apply flex items-center gap-3 px-4 py-3 text-sidebar-foreground/80 rounded-lg transition-all duration-200;
+  }
+
+  .sidebar-item:hover {
+    @apply bg-sidebar-accent text-sidebar-foreground;
+  }
+
+  .sidebar-item.active {
+    @apply bg-sidebar-accent text-sidebar-foreground font-medium;
+  }
+
+  .empty-state {
+    @apply flex flex-col items-center justify-center py-16 text-muted-foreground;
+  }
+
+  .table-header {
+    @apply bg-muted/50 text-muted-foreground text-sm font-medium;
+  }
+
+  .form-section {
+    @apply space-y-4 p-6 bg-card rounded-xl border border-border shadow-sm;
+  }
+
+  .page-header {
+    @apply flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6;
+  }
+
+  .page-title {
+    @apply text-2xl font-semibold text-foreground;
+  }
+
+  .stat-value {
+    @apply text-3xl font-bold text-foreground;
+  }
+
+  .stat-label {
+    @apply text-sm text-muted-foreground font-medium;
+  }
+
+  /* Form field improvements */
+  .form-field {
+    @apply space-y-2;
+  }
+
+  .form-field label {
+    @apply text-sm font-medium text-foreground;
+  }
+
+  .form-field input,
+  .form-field textarea,
+  .form-field select {
+    @apply transition-all duration-200;
+  }
+
+  .form-field input:focus,
+  .form-field textarea:focus {
+    @apply ring-2 ring-primary/20 border-primary;
+  }
+
+  /* Dialog form improvements */
+  .dialog-form {
+    @apply space-y-5;
+  }
+
+  .dialog-form > div {
+    @apply space-y-2;
+  }
+
+  /* Content area with subtle pattern */
+  .content-area {
+    @apply relative;
+  }
+
+  .content-area::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(hsl(var(--foreground) / 0.03) 1px, transparent 1px);
+    background-size: 24px 24px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Card hover effects */
+  .card-hover {
+    @apply transition-all duration-200 hover:shadow-md hover:-translate-y-0.5;
+  }
+
+  /* Data table improvements */
+  .data-table {
+    @apply bg-card rounded-xl border border-border overflow-hidden shadow-sm;
+  }
+
+  .data-table th {
+    @apply bg-muted/50 text-muted-foreground text-xs font-semibold uppercase tracking-wider;
+  }
+
+  .data-table td {
+    @apply text-sm;
+  }
+
+  .data-table tr:hover {
+    @apply bg-muted/30;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.3s ease-out;
+  }
+
+  .animate-slide-in-left {
+    animation: slideInLeft 0.3s ease-out;
+  }
+
+  .animate-pulse-subtle {
+    animation: pulseSubtle 2s ease-in-out infinite;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes slideInLeft {
+    from {
+      opacity: 0;
+      transform: translateX(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes pulseSubtle {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.7;
+    }
+  }
+
+  /* Gradient backgrounds */
+  .bg-gradient-navy {
+    background: linear-gradient(135deg, hsl(var(--navy-dark)), hsl(var(--navy)));
+  }
+
+  .bg-gradient-subtle {
+    background: linear-gradient(180deg, hsl(var(--background)), hsl(var(--muted) / 0.5));
+  }
+
+  /* Glass effect */
+  .glass {
+    @apply bg-card/80 backdrop-blur-md;
+  }
+
+  /* Z-index utilities for dropdowns */
+  .dropdown-menu {
+    @apply z-50 bg-popover border border-border shadow-lg;
+  }
+}
+
+
+

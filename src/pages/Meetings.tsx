@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DataTable } from '@/components/ui/DataTable';
-import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { exportToCSV, exportToExcel, exportToPDF } from '@/utils/export';
 import { ExportDropdown } from '@/components/ExportDropdown';
@@ -23,11 +22,13 @@ import { useToast } from '@/hooks/use-toast';
 import {
   Calendar, Plus, Trash2, Pencil, Video, MapPin, Users,
   UserPlus, Building2, Clock, ChevronLeft, ChevronRight,
-  List, CalendarDays, Link,
+  List, CalendarDays,
 } from 'lucide-react';
-import { format, startOfMonth, endOfMonth, eachDayOfInterval,
-         isSameMonth, isSameDay, isToday, addMonths, subMonths,
-         parseISO, startOfWeek, endOfWeek } from 'date-fns';
+import {
+  format, startOfMonth, endOfMonth, eachDayOfInterval,
+  isSameMonth, isSameDay, isToday, addMonths, subMonths,
+  parseISO, startOfWeek, endOfWeek,
+} from 'date-fns';
 
 type MeetingType   = 'discovery' | 'demo' | 'follow_up' | 'check_in' | 'internal' | 'other';
 type MeetingStatus = 'scheduled' | 'completed' | 'cancelled' | 'active' | 'on_hold';
@@ -54,6 +55,7 @@ interface Meeting {
   lead_name?:    string | null;
   contact_name?: string | null;
   company_name?: string | null;
+  linked_activity_id?: string | null;
 }
 
 interface LinkedRecord { id: string; label: string; }
@@ -73,12 +75,8 @@ const typeColors: Record<MeetingType, string> = {
 };
 
 const typeAccents: Record<MeetingType, string> = {
-  discovery: '#3b82f6',
-  demo:      '#8b5cf6',
-  follow_up: '#f59e0b',
-  check_in:  '#14b8a6',
-  internal:  '#94a3b8',
-  other:     '#94a3b8',
+  discovery: '#3b82f6', demo: '#8b5cf6', follow_up: '#f59e0b',
+  check_in: '#14b8a6', internal: '#94a3b8', other: '#94a3b8',
 };
 
 const statusColors: Record<MeetingStatus, string> = {
@@ -95,13 +93,18 @@ const modeIcons: Record<MeetingMode, React.ElementType> = {
   phone:     Clock,
 };
 
+// ─── Map meeting status → activity status ────────────────────────────────────
+const meetingStatusToActivity = (s: MeetingStatus): string => {
+  if (s === 'completed') return 'completed';
+  if (s === 'cancelled') return 'cancelled';
+  return 'scheduled';
+};
+
+// ─── Calendar cell ────────────────────────────────────────────────────────────
 function CalendarCell({
   day, meetings, currentMonth, onSelect,
 }: {
-  day: Date;
-  meetings: Meeting[];
-  currentMonth: Date;
-  onSelect: (m: Meeting) => void;
+  day: Date; meetings: Meeting[]; currentMonth: Date; onSelect: (m: Meeting) => void;
 }) {
   const dayMeetings = meetings.filter(m => isSameDay(parseISO(m.start_time), day));
   const inMonth = isSameMonth(day, currentMonth);
@@ -120,6 +123,7 @@ function CalendarCell({
             className={`w-full text-left text-[10px] px-1.5 py-0.5 rounded truncate font-medium transition-opacity hover:opacity-80 ${typeColors[m.meeting_type]}`}
           >
             {format(parseISO(m.start_time), 'h:mm a')} {m.title}
+            {m.linked_activity_id && <span className="ml-1 opacity-60">↔</span>}
           </button>
         ))}
         {dayMeetings.length > 3 && (
@@ -211,11 +215,67 @@ export default function Meetings() {
     });
   }, [user]);
 
-  const refetch = () => fetchOptions().then(({ mLeads, mContacts, mCompanies }) =>
-    fetchMeetings(mLeads, mContacts, mCompanies)
-  );
+  const refetch = () =>
+    fetchOptions().then(({ mLeads, mContacts, mCompanies }) =>
+      fetchMeetings(mLeads, mContacts, mCompanies)
+    );
 
   const resetForm = () => { setForm(emptyForm); setEditingMeeting(null); };
+
+  // ─── Sync: create or update a linked Activity for every meeting ───────────
+  const syncToActivity = async (
+    meetingId: string,
+    title: string,
+    description: string | null,
+    status: MeetingStatus,
+    start_time: string | null,
+    existingActivityId: string | null | undefined,
+    lead_id?: string | null,
+    deal_id?: string | null,
+  ): Promise<string | null> => {
+    const activityPayload = {
+      type: 'meeting' as const,
+      title,
+      description: description || null,
+      status: meetingStatusToActivity(status),
+      due_date: start_time || null,
+      linked_meeting_id: meetingId,
+      lead_id: lead_id || null,
+      deal_id: deal_id || null,
+    };
+
+    if (existingActivityId) {
+      const { error } = await (supabase as any)
+        .from('activities')
+        .update(activityPayload)
+        .eq('id', existingActivityId);
+      if (error) {
+        console.error('Failed to sync activity update:', error.message);
+        return existingActivityId;
+      }
+      return existingActivityId;
+    } else {
+      const { data, error } = await (supabase as any)
+        .from('activities')
+        .insert([{ ...activityPayload, created_by: user?.id }])
+        .select('id')
+        .single();
+      if (error) {
+        console.error('Failed to create linked activity:', error.message);
+        return null;
+      }
+      return data?.id ?? null;
+    }
+  };
+
+  // ─── Sync: delete linked activity when meeting is deleted ────────────────
+  const deleteSyncedActivity = async (activityId: string) => {
+    const { error } = await (supabase as any)
+      .from('activities')
+      .delete()
+      .eq('id', activityId);
+    if (error) console.error('Failed to delete linked activity:', error.message);
+  };
 
   const handleEdit = (meeting: Meeting) => {
     setEditingMeeting(meeting);
@@ -243,8 +303,13 @@ export default function Meetings() {
   const handleDelete = (meeting: Meeting) => {
     confirm({
       title: `Delete "${meeting.title}"?`,
-      description: 'This action cannot be undone.',
+      description: meeting.linked_activity_id
+        ? 'This will also delete the linked activity. This action cannot be undone.'
+        : 'This action cannot be undone.',
       onConfirm: async () => {
+        if (meeting.linked_activity_id) {
+          await deleteSyncedActivity(meeting.linked_activity_id);
+        }
         const { error } = await (supabase as any).from('meetings').delete().eq('id', meeting.id);
         if (error) { toast({ variant: 'destructive', title: 'Error', description: error.message }); return; }
         logAudit({ userId: user?.id, userEmail: profile?.email, action: 'DELETE', entity: 'meetings', entityId: meeting.id });
@@ -256,8 +321,20 @@ export default function Meetings() {
   };
 
   const handleStatusChange = async (meeting: Meeting, newStatus: MeetingStatus) => {
-    const { error } = await (supabase as any).from('meetings').update({ status: newStatus }).eq('id', meeting.id);
+    const { error } = await (supabase as any)
+      .from('meetings')
+      .update({ status: newStatus })
+      .eq('id', meeting.id);
     if (error) { toast({ variant: 'destructive', title: 'Error', description: error.message }); return; }
+
+    // Sync status to linked activity
+    if (meeting.linked_activity_id) {
+      await (supabase as any)
+        .from('activities')
+        .update({ status: meetingStatusToActivity(newStatus) })
+        .eq('id', meeting.linked_activity_id);
+    }
+
     toast({ title: `Marked as ${newStatus.replace('_', ' ')}` });
     setSelectedMeeting(prev => prev ? { ...prev, status: newStatus } : null);
     refetch();
@@ -284,13 +361,65 @@ export default function Meetings() {
     };
 
     if (editingMeeting) {
-      const { error } = await (supabase as any).from('meetings').update(payload).eq('id', editingMeeting.id);
+      // ── UPDATE ──────────────────────────────────────────────────────────────
+      const { error } = await (supabase as any)
+        .from('meetings')
+        .update(payload)
+        .eq('id', editingMeeting.id);
       if (error) { toast({ variant: 'destructive', title: 'Error', description: error.message }); return; }
+
+      // Sync to linked activity — create one if it doesn't exist yet
+      const activityId = await syncToActivity(
+        editingMeeting.id,
+        form.title,
+        form.description || null,
+        form.status,
+        form.start_time || null,
+        editingMeeting.linked_activity_id,
+        form.lead_id || null,
+        null,
+      );
+
+      // Persist updated linked_activity_id if it changed (e.g. first sync)
+      if (activityId && activityId !== editingMeeting.linked_activity_id) {
+        await (supabase as any)
+          .from('meetings')
+          .update({ linked_activity_id: activityId })
+          .eq('id', editingMeeting.id);
+      }
+
       logAudit({ userId: user?.id, userEmail: profile?.email, action: 'UPDATE', entity: 'meetings', entityId: editingMeeting.id });
       toast({ title: 'Meeting updated' });
+
     } else {
-      const { error } = await (supabase as any).from('meetings').insert([{ ...payload, created_by: user?.id }]);
+      // ── CREATE ──────────────────────────────────────────────────────────────
+      const { data: newMeeting, error } = await (supabase as any)
+        .from('meetings')
+        .insert([{ ...payload, created_by: user?.id }])
+        .select('id')
+        .single();
       if (error) { toast({ variant: 'destructive', title: 'Error', description: error.message }); return; }
+
+      // Always create a linked activity for every new meeting
+      if (newMeeting?.id) {
+        const activityId = await syncToActivity(
+          newMeeting.id,
+          form.title,
+          form.description || null,
+          form.status,
+          form.start_time || null,
+          null,
+          form.lead_id || null,
+          null,
+        );
+        if (activityId) {
+          await (supabase as any)
+            .from('meetings')
+            .update({ linked_activity_id: activityId })
+            .eq('id', newMeeting.id);
+        }
+      }
+
       logAudit({ userId: user?.id, userEmail: profile?.email, action: 'CREATE', entity: 'meetings' });
       toast({ title: 'Meeting scheduled' });
     }
@@ -302,18 +431,18 @@ export default function Meetings() {
 
   const handleExport = (type: 'csv' | 'excel' | 'pdf') => {
     const rows = meetings.map(m => ({
-      Title:    m.title,
-      Type:     typeLabels[m.meeting_type],
-      Status:   m.status,
-      Mode:     m.mode,
-      Start:    m.start_time ? format(parseISO(m.start_time), 'yyyy-MM-dd HH:mm') : '—',
-      End:      m.end_time   ? format(parseISO(m.end_time),   'HH:mm') : '—',
-      Location: m.location   ?? '—',
-      VideoLink:m.video_link ?? '—',
-      Lead:     m.lead_name    ?? '—',
-      Contact:  m.contact_name ?? '—',
-      Company:  m.company_name ?? '—',
-      Attendees:m.attendees   ?? '—',
+      Title:     m.title,
+      Type:      typeLabels[m.meeting_type],
+      Status:    m.status,
+      Mode:      m.mode,
+      Start:     m.start_time ? format(parseISO(m.start_time), 'yyyy-MM-dd HH:mm') : '—',
+      End:       m.end_time   ? format(parseISO(m.end_time),   'HH:mm') : '—',
+      Location:  m.location   ?? '—',
+      VideoLink: m.video_link ?? '—',
+      Lead:      m.lead_name    ?? '—',
+      Contact:   m.contact_name ?? '—',
+      Company:   m.company_name ?? '—',
+      Attendees: m.attendees   ?? '—',
     }));
     if (type === 'csv')   exportToCSV('meetings', rows);
     if (type === 'excel') exportToExcel('meetings', rows);
@@ -340,7 +469,14 @@ export default function Meetings() {
           <div className="flex items-start gap-2">
             <ModeIcon className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
             <div>
-              <p className="font-semibold text-slate-900">{m.title}</p>
+              <p className="font-semibold text-slate-900 flex items-center gap-1.5">
+                {m.title}
+                {m.linked_activity_id && (
+                  <span className="inline-flex items-center rounded-full bg-indigo-50 text-indigo-600 ring-1 ring-indigo-200 px-1.5 py-0.5 text-[10px] font-medium">
+                    ↔ synced
+                  </span>
+                )}
+              </p>
               {m.description && <p className="text-xs text-muted-foreground truncate max-w-xs">{m.description}</p>}
             </div>
           </div>
@@ -368,7 +504,8 @@ export default function Meetings() {
       render: (m: Meeting) => m.start_time
         ? <div className="text-sm">
             <p className="font-medium">{format(parseISO(m.start_time), 'MMM d, yyyy')}</p>
-            <p className="text-muted-foreground">{format(parseISO(m.start_time), 'h:mm a')}
+            <p className="text-muted-foreground">
+              {format(parseISO(m.start_time), 'h:mm a')}
               {m.end_time && ` – ${format(parseISO(m.end_time), 'h:mm a')}`}
             </p>
           </div>
@@ -389,13 +526,21 @@ export default function Meetings() {
       key: 'actions', header: 'Actions',
       render: (meeting: Meeting) => (
         <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" className="hover:bg-indigo-50 hover:text-indigo-600 transition-colors" onClick={() => { setSelectedMeeting(meeting); setDetailOpen(true); }}>
+          <Button
+            size="sm" variant="ghost"
+            className="hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+            onClick={() => { setSelectedMeeting(meeting); setDetailOpen(true); }}
+          >
             View
           </Button>
           {canManage && (
             <>
-              <Button variant="ghost" size="sm" className="hover:bg-indigo-50 hover:text-indigo-600 transition-colors" onClick={() => handleEdit(meeting)}><Pencil className="h-4 w-4" /></Button>
-              <Button variant="ghost" size="sm" className="hover:bg-red-50 hover:text-red-500 transition-colors" onClick={() => handleDelete(meeting)}><Trash2 className="h-4 w-4" /></Button>
+              <Button variant="ghost" size="sm" className="hover:bg-indigo-50 hover:text-indigo-600 transition-colors" onClick={() => handleEdit(meeting)}>
+                <Pencil className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" size="sm" className="hover:bg-red-50 hover:text-red-500 transition-colors" onClick={() => handleDelete(meeting)}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
             </>
           )}
         </div>
@@ -414,6 +559,7 @@ export default function Meetings() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* View toggle */}
           <div className="flex items-center border rounded-lg overflow-hidden">
             <Button
               variant={viewMode === 'calendar' ? 'default' : 'ghost'}
@@ -436,9 +582,7 @@ export default function Meetings() {
           {canManage && (
             <Dialog open={dialogOpen} onOpenChange={open => { setDialogOpen(open); if (!open) resetForm(); }}>
               <DialogTrigger asChild>
-<Button>
-  <Plus className="h-4 w-4 mr-2" />Schedule Meeting
-</Button>
+                <Button><Plus className="h-4 w-4 mr-2" />Schedule Meeting</Button>
               </DialogTrigger>
 
               <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -446,9 +590,15 @@ export default function Meetings() {
                   <DialogTitle>{editingMeeting ? 'Edit Meeting' : 'Schedule Meeting'}</DialogTitle>
                 </DialogHeader>
                 <form onSubmit={handleSubmit} className="space-y-5">
+
                   <div className="space-y-2">
                     <Label>Title <span className="text-destructive">*</span></Label>
-                    <Input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} required placeholder="e.g. Discovery call with Acme Corp" />
+                    <Input
+                      value={form.title}
+                      onChange={e => setForm({ ...form, title: e.target.value })}
+                      required
+                      placeholder="e.g. Discovery call with Acme Corp"
+                    />
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
@@ -494,7 +644,7 @@ export default function Meetings() {
                       <Label>{form.mode === 'virtual' ? 'Video Link' : 'Location'}</Label>
                       {form.mode === 'virtual'
                         ? <Input value={form.video_link} onChange={e => setForm({ ...form, video_link: e.target.value })} placeholder="https://meet.google.com/…" />
-                        : <Input value={form.location}   onChange={e => setForm({ ...form, location: e.target.value })}   placeholder="Office address or room" />
+                        : <Input value={form.location}   onChange={e => setForm({ ...form, location:   e.target.value })} placeholder="Office address or room" />
                       }
                     </div>
                   </div>
@@ -502,27 +652,36 @@ export default function Meetings() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label>Start Time <span className="text-destructive">*</span></Label>
-                      <Input type="datetime-local" value={form.start_time} onChange={e => setForm({ ...form, start_time: e.target.value })} required />
+                      <Input
+                        type="datetime-local"
+                        value={form.start_time}
+                        onChange={e => setForm({ ...form, start_time: e.target.value })}
+                        required
+                      />
                     </div>
                     <div className="space-y-2">
                       <Label>End Time</Label>
-                      <Input type="datetime-local" value={form.end_time} onChange={e => setForm({ ...form, end_time: e.target.value })} />
+                      <Input
+                        type="datetime-local"
+                        value={form.end_time}
+                        onChange={e => setForm({ ...form, end_time: e.target.value })}
+                      />
                     </div>
                   </div>
 
                   <div className="space-y-2">
                     <Label>Attendees</Label>
-                    <Select value={form.attendees ? undefined : '__none__'}
+                    <Select
+                      value={undefined}
                       onValueChange={v => {
-                        if (v === '__none__') return;
                         const existing = form.attendees ? form.attendees.split(',').map(s => s.trim()) : [];
                         if (!existing.includes(v)) {
                           setForm({ ...form, attendees: [...existing, v].filter(Boolean).join(', ') });
                         }
-                      }}>
+                      }}
+                    >
                       <SelectTrigger><SelectValue placeholder="Add team members…" /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="__none__">Select to add…</SelectItem>
                         {members.map(m => <SelectItem key={m.id} value={m.email}>{m.email}</SelectItem>)}
                       </SelectContent>
                     </Select>
@@ -534,7 +693,7 @@ export default function Meetings() {
                   </div>
 
                   <div className="rounded-lg border bg-muted/30 p-4 space-y-4">
-                    <p className="text-sm font-medium">Associate with records</p>
+                    <p className="text-sm font-medium">Associate with records <span className="text-muted-foreground font-normal text-xs">(optional)</span></p>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                       <div className="space-y-2">
                         <Label className="flex items-center gap-1 text-xs"><UserPlus className="h-3.5 w-3.5" /> Lead</Label>
@@ -582,6 +741,13 @@ export default function Meetings() {
                     <Textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={3} placeholder="Outcomes, action items, follow-ups…" />
                   </div>
 
+                  <div className="rounded-lg bg-indigo-50 border border-indigo-100 px-4 py-2.5 flex items-start gap-2">
+                    <span className="text-indigo-500 mt-0.5 text-sm">✦</span>
+                    <p className="text-xs text-indigo-700">
+                      This meeting will automatically appear as a <strong>Meeting-type activity</strong> in the Activities tab, keeping both in sync.
+                    </p>
+                  </div>
+
                   <div className="flex justify-end gap-2 pt-2">
                     <Button type="button" variant="outline" onClick={() => { setDialogOpen(false); resetForm(); }}>Cancel</Button>
                     <Button type="submit">
@@ -595,14 +761,17 @@ export default function Meetings() {
         </div>
       </div>
 
+      {/* ── Calendar View ─────────────────────────────────────────────────── */}
       {viewMode === 'calendar' && (
         <div className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b">
-            <Button variant="ghost" size="sm" className="hover:bg-indigo-50 hover:text-indigo-600" onClick={() => setCalendarMonth(subMonths(calendarMonth, 1))}>
+            <Button variant="ghost" size="sm" className="hover:bg-indigo-50 hover:text-indigo-600"
+              onClick={() => setCalendarMonth(subMonths(calendarMonth, 1))}>
               <ChevronLeft className="h-4 w-4" />
             </Button>
             <h2 className="font-semibold">{format(calendarMonth, 'MMMM yyyy')}</h2>
-            <Button variant="ghost" size="sm" className="hover:bg-indigo-50 hover:text-indigo-600" onClick={() => setCalendarMonth(addMonths(calendarMonth, 1))}>
+            <Button variant="ghost" size="sm" className="hover:bg-indigo-50 hover:text-indigo-600"
+              onClick={() => setCalendarMonth(addMonths(calendarMonth, 1))}>
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
@@ -627,6 +796,7 @@ export default function Meetings() {
         </div>
       )}
 
+      {/* ── List View ─────────────────────────────────────────────────────── */}
       {viewMode === 'list' && (
         <>
           <div className="space-y-4 md:hidden">
@@ -636,10 +806,14 @@ export default function Meetings() {
                 <MobileCard
                   key={meeting.id}
                   title={<span className="flex items-center gap-2"><ModeIcon className="h-4 w-4 shrink-0" />{meeting.title}</span>}
-                  badge={<span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${typeColors[meeting.meeting_type]}`}>{typeLabels[meeting.meeting_type]}</span>}
+                  badge={
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${typeColors[meeting.meeting_type]}`}>
+                      {typeLabels[meeting.meeting_type]}
+                    </span>
+                  }
                   details={[
-                    { label: 'Status',  value: <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${statusColors[meeting.status]}`}>{meeting.status.replace('_',' ')}</span> },
-                    { label: 'When',    value: meeting.start_time ? format(parseISO(meeting.start_time), 'MMM d, yyyy h:mm a') : '—' },
+                    { label: 'Status', value: <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${statusColors[meeting.status]}`}>{meeting.status.replace('_',' ')}</span> },
+                    { label: 'When',   value: meeting.start_time ? format(parseISO(meeting.start_time), 'MMM d, yyyy h:mm a') : '—' },
                     { label: 'Lead',    value: meeting.lead_name    || null },
                     { label: 'Contact', value: meeting.contact_name || null },
                     { label: 'Company', value: meeting.company_name || null },
@@ -649,8 +823,12 @@ export default function Meetings() {
                       <Button size="sm" variant="outline" onClick={() => { setSelectedMeeting(meeting); setDetailOpen(true); }}>View</Button>
                       {canManage && (
                         <>
-                          <Button size="sm" variant="ghost" className="hover:bg-indigo-50 hover:text-indigo-600" onClick={() => handleEdit(meeting)}><Pencil className="h-4 w-4" /></Button>
-                          <Button size="sm" variant="ghost" className="hover:bg-red-50 hover:text-red-500" onClick={() => handleDelete(meeting)}><Trash2 className="h-4 w-4" /></Button>
+                          <Button size="sm" variant="ghost" className="hover:bg-indigo-50 hover:text-indigo-600" onClick={() => handleEdit(meeting)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button size="sm" variant="ghost" className="hover:bg-red-50 hover:text-red-500" onClick={() => handleDelete(meeting)}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </>
                       )}
                     </>
@@ -673,6 +851,7 @@ export default function Meetings() {
         </>
       )}
 
+      {/* ── Detail Dialog ─────────────────────────────────────────────────── */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           {selectedMeeting && (() => {
@@ -687,7 +866,14 @@ export default function Meetings() {
                       <ModeIcon className="h-5 w-5" style={{ color: accent }} />
                     </div>
                     <div className="flex-1">
-                      <DialogTitle className="text-left">{m.title}</DialogTitle>
+                      <DialogTitle className="text-left flex items-center gap-2">
+                        {m.title}
+                        {m.linked_activity_id && (
+                          <span className="inline-flex items-center rounded-full bg-indigo-50 text-indigo-600 ring-1 ring-indigo-200 px-1.5 py-0.5 text-[10px] font-medium">
+                            ↔ synced to activity
+                          </span>
+                        )}
+                      </DialogTitle>
                       <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${typeColors[m.meeting_type]}`}>{typeLabels[m.meeting_type]}</span>
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${statusColors[m.status]}`}>{m.status.replace('_',' ')}</span>
@@ -739,14 +925,12 @@ export default function Meetings() {
                       <p className="text-sm">{m.description}</p>
                     </div>
                   )}
-
                   {m.agenda && (
                     <div>
                       <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">Agenda</p>
                       <p className="text-sm whitespace-pre-wrap bg-muted/30 rounded-lg p-3">{m.agenda}</p>
                     </div>
                   )}
-
                   {m.notes && (
                     <div>
                       <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">Meeting Notes</p>

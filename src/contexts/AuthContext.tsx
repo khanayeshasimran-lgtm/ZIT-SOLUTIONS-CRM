@@ -5,6 +5,9 @@
  * - loading resolves as soon as session is known — NOT blocked by profile fetch
  * - profile fetches in the background after auth
  * - role + profile exposed via useAuth()
+ *
+ * FIX: Added organization_id to UserProfile type and to the select query so
+ * ProtectedRoutes can correctly detect whether the user has an org set up.
  */
 
 import {
@@ -20,7 +23,7 @@ import type { User, Session } from "@supabase/supabase-js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type AppRole = "admin" | "manager" | "user" | "investor";
+export type AppRole = "admin" | "manager" | "user" | "investor" | "client";
 
 export interface UserProfile {
   id: string;
@@ -31,6 +34,7 @@ export interface UserProfile {
   company: string | null;
   location: string | null;
   role: AppRole;
+  organization_id: string | null; // ← FIX: was missing, caused hasOrg to always be undefined
 }
 
 interface AuthContextValue {
@@ -62,7 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data, error } = await supabase
         .from("profiles")
-        .select("id, email, full_name, phone, job_title, company, location, role")
+        .select("id, email, full_name, phone, job_title, company, location, role, organization_id") // ← FIX: added organization_id
         .eq("id", userId)
         .single<UserProfile>();
 
@@ -76,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Public refresh — call after profile updates in Settings
+  // Public refresh — call after profile updates (e.g. after onboarding creates org)
   const refreshProfile = useCallback(async () => {
     if (!user) return;
     await fetchProfile(user.id);

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { z } from 'zod';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useConfirmDelete } from '@/hooks/useConfirmDelete';
@@ -134,6 +135,22 @@ function CalendarCell({
   );
 }
 
+
+// ── Zod validation schema ─────────────────────────────────────────────────────
+const MeetingFormSchema = z.object({
+  title:        z.string().min(2, 'Title must be at least 2 characters').max(150, 'Too long').trim(),
+  description:  z.string().max(2000, 'Too long').optional().or(z.literal('')),
+  agenda:       z.string().max(2000, 'Too long').optional().or(z.literal('')),
+  start_time:   z.string().min(1, 'Start time is required'),
+  end_time:     z.string().optional().or(z.literal('')),
+  video_link:   z.string().url('Must be a valid URL').or(z.literal('')).optional(),
+  attendees:    z.string().max(500, 'Too long').optional().or(z.literal('')),
+}).refine(d => !d.end_time || !d.start_time || d.end_time >= d.start_time, {
+  message: 'End time must be after start time',
+  path: ['end_time'],
+});
+type MeetingFormErrors = Partial<Record<string, string>>;
+
 export default function Meetings() {
   const { user, role, profile } = useAuth();
   const { toast } = useToast();
@@ -166,6 +183,7 @@ export default function Meetings() {
     lead_id: '', contact_id: '', company_id: '',
   };
   const [form, setForm] = useState(emptyForm);
+  const [formErrors, setFormErrors] = useState<MeetingFormErrors>({});
 
   const fetchOptions = async () => {
     const [{ data: ld }, { data: cd }, { data: cod }, { data: pd }] = await Promise.all([
@@ -220,7 +238,7 @@ export default function Meetings() {
       fetchMeetings(mLeads, mContacts, mCompanies)
     );
 
-  const resetForm = () => { setForm(emptyForm); setEditingMeeting(null); };
+  const resetForm = () => { setFormErrors({}); setForm(emptyForm); setEditingMeeting(null); };
 
   // ─── Sync: create or update a linked Activity for every meeting ───────────
   const syncToActivity = async (
@@ -342,6 +360,16 @@ export default function Meetings() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // ── Zod validation ────────────────────────────────────────────────────────
+    const result = MeetingFormSchema.safeParse(form);
+    if (!result.success) {
+      const errs: MeetingFormErrors = {};
+      result.error.errors.forEach(e => { if (e.path[0]) errs[String(e.path[0])] = e.message; });
+      setFormErrors(errs);
+      return;
+    }
+    setFormErrors({});
     const payload = {
       title:        form.title,
       description:  form.description  || null,

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { z } from 'zod';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useConfirmDelete } from '@/hooks/useConfirmDelete';
@@ -77,6 +78,17 @@ function CompanyAvatar({ name }: { name: string }) {
   );
 }
 
+
+// ── Zod validation schema ─────────────────────────────────────────────────────
+const CompanyFormSchema = z.object({
+  name:     z.string().min(2, 'Company name must be at least 2 characters').max(120, 'Too long').trim(),
+  industry: z.string().max(80, 'Too long').optional().or(z.literal('')),
+  website:  z.string().url('Invalid URL — include https://').or(z.literal('')).optional(),
+  phone:    z.string().min(6, 'Phone too short').max(30, 'Too long').or(z.literal('')).optional(),
+  address:  z.string().max(200, 'Too long').optional().or(z.literal('')),
+});
+type CompanyFormErrors = Partial<Record<keyof z.infer<typeof CompanyFormSchema>, string>>;
+
 export default function Companies() {
   const { user, role, profile } = useAuth();
   const navigate = useNavigate();
@@ -87,6 +99,7 @@ export default function Companies() {
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingCompany, setEditingCompany] = useState<Company | null>(null);
+  const [formErrors, setFormErrors] = useState<CompanyFormErrors>({});
   const [customIndustries, setCustomIndustries] = useState<string[]>([]);
   const [showOtherIndustry, setShowOtherIndustry] = useState(false);
   const [showAddContactPrompt, setShowAddContactPrompt] = useState(false);
@@ -121,7 +134,7 @@ export default function Companies() {
 
   useEffect(() => { fetchCompanies(); }, [user]);
 
-  const resetForm = () => { setFormData({ name: '', industry: '', website: '', phone: '', address: '' }); setEditingCompany(null); setShowOtherIndustry(false); };
+  const resetForm = () => { setFormErrors({}); setFormData({ name: '', industry: '', website: '', phone: '', address: '' }); setEditingCompany(null); setShowOtherIndustry(false); };
 
   const handleExport = (type: 'csv' | 'excel' | 'pdf') => {
     const rows = companies.map(item => ({ Name: item.name, Industry: item.industry, Website: item.website, Phone: item.phone, Address: item.address }));
@@ -133,6 +146,16 @@ export default function Companies() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // ── Zod validation ────────────────────────────────────────────────────────
+    const result = CompanyFormSchema.safeParse(formData);
+    if (!result.success) {
+      const errs: CompanyFormErrors = {};
+      result.error.errors.forEach(e => { if (e.path[0]) errs[e.path[0] as keyof CompanyFormErrors] = e.message; });
+      setFormErrors(errs);
+      return;
+    }
+    setFormErrors({});
     const payload = { name: formData.name, industry: formData.industry || null, website: formData.website || null, phone: formData.phone || null, address: formData.address || null };
     if (editingCompany) {
       const { error } = await supabase.from('companies').update(payload).eq('id', editingCompany.id);
@@ -255,7 +278,8 @@ export default function Companies() {
               <form onSubmit={handleSubmit} className="space-y-5">
                 <div className="space-y-2">
                   <Label htmlFor="name">Company Name <span className="text-destructive">*</span></Label>
-                  <Input id="name" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} required />
+                  <Input id="name" value={formData.name} className={formErrors.name ? 'border-destructive' : ''} onChange={e => setFormData({ ...formData, name: e.target.value })} />
+                  {formErrors.name && <p className="text-xs text-destructive">{formErrors.name}</p>}
                 </div>
                 <div className="space-y-2">
                   <Label>Industry</Label>

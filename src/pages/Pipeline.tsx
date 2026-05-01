@@ -23,6 +23,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
+import { notifyDealWon } from '@/services/notifications.service';
 import {
   Plus, Pencil, Trash2, ClipboardList, X, Search,
   TrendingUp, DollarSign, Target, BarChart2,
@@ -160,7 +161,16 @@ export default function Pipeline() {
       setDeals(prev => prev.map(d => d.id === id ? { ...d, stage: deal.stage } : d));
     } else {
       toast({ title: `Moved to ${STAGE_CFG[targetStage].label} ${STAGE_CFG[targetStage].emoji}` });
-      logAudit({ userId: user?.id, userEmail: profile?.email ?? user?.email, action: 'UPDATE', entity: 'deals', entityId: id });
+
+      if (targetStage === 'won') {
+        await notifyDealWon({
+          dealTitle: deal.title,
+          value: Number(deal.value),
+          wonBy: profile?.email ?? user?.email,
+        });
+      }
+
+logAudit({ userId: user?.id, userEmail: profile?.email ?? user?.email, action: 'UPDATE', entity: 'deals', entityId: id });
     }
   };
   // ────────────────────────────────────────────────────────────────────────────

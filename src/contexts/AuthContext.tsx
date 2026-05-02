@@ -1,13 +1,15 @@
 /**
  * AuthContext.tsx
  *
- * Single source of truth for auth state.
- * - loading resolves as soon as session is known — NOT blocked by profile fetch
- * - profile fetches in the background after auth
- * - role + profile exposed via useAuth()
+ * FIX IN THIS VERSION:
+ *   Added `company_id` to the UserProfile type and to the select query.
  *
- * FIX: Added organization_id to UserProfile type and to the select query so
- * ProtectedRoutes can correctly detect whether the user has an org set up.
+ *   The Portal Dashboard reads (profile as any).company_id to scope all its
+ *   data fetches to the client's company. Without company_id in the select,
+ *   it was always undefined, so `loadData()` returned immediately and the
+ *   portal was stuck on "Loading your portal…" forever.
+ *
+ * All other logic unchanged.
  */
 
 import {
@@ -34,7 +36,8 @@ export interface UserProfile {
   company: string | null;
   location: string | null;
   role: AppRole;
-  organization_id: string | null; // ← FIX: was missing, caused hasOrg to always be undefined
+  organization_id: string | null;
+  company_id: string | null; // ← FIX: was missing; portal uses this to scope all data
 }
 
 interface AuthContextValue {
@@ -56,17 +59,17 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser]       = useState<User | null>(null);
+  const [user,    setUser]    = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetch profile in the background — never blocks loading
   const fetchProfile = useCallback(async (userId: string) => {
     try {
       const { data, error } = await supabase
         .from("profiles")
-        .select("id, email, full_name, phone, job_title, company, location, role, organization_id") // ← FIX: added organization_id
+        // FIX: added company_id so the client portal can scope its queries
+        .select("id, email, full_name, phone, job_title, company, location, role, organization_id, company_id")
         .eq("id", userId)
         .single<UserProfile>();
 
@@ -80,7 +83,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Public refresh — call after profile updates (e.g. after onboarding creates org)
   const refreshProfile = useCallback(async () => {
     if (!user) return;
     await fetchProfile(user.id);
@@ -97,15 +99,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(session?.user ?? null);
 
         if (session?.user) {
-          // Fire profile fetch in background — do NOT await here
-          // loading is not blocked by this
           fetchProfile(session.user.id);
         } else {
           setProfile(null);
         }
 
-        // Resolve loading as soon as we know the auth state
-        // regardless of whether profile has loaded yet
         setLoading(false);
       }
     );

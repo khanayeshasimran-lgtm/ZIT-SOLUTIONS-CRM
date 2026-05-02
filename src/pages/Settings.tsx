@@ -1,7 +1,13 @@
 /**
  * pages/Settings.tsx
- * Step 11: Added notification preferences section.
- * Profile edit + role display unchanged from original.
+ *
+ * CHANGES IN THIS VERSION:
+ *   - Added 'client' to ROLE_META so Settings renders correctly when the
+ *     logged-in user has role='client' (previously caused a lookup miss and
+ *     displayed nothing in the role card).
+ *   - Note: clients should normally only use /portal, but if they ever reach
+ *     /settings this won't crash anymore.
+ *   - All other logic unchanged (notification prefs, profile edit, etc.)
  */
 
 import { useEffect, useState } from "react";
@@ -23,6 +29,8 @@ const ROLE_META: Record<AppRole, { label: string; color: string; description: st
   manager:  { label: "Manager",  color: "bg-purple-100 text-purple-800", description: "Manage projects & teams"         },
   user:     { label: "User",     color: "bg-green-100 text-green-800",   description: "Standard access"                 },
   investor: { label: "Investor", color: "bg-amber-100 text-amber-800",   description: "Read-only investor dashboard"    },
+  // FIX: 'client' added — was missing, caused a blank role card for client accounts
+  client:   { label: "Client",   color: "bg-teal-100 text-teal-800",     description: "Client portal access only"       },
 };
 
 // ── Notification preference types ─────────────────────────────────────────────
@@ -105,7 +113,6 @@ export default function Settings() {
       company:   profile.company   ?? "",
       location:  profile.location  ?? "",
     });
-    // Load saved notification prefs
     if ((profile as any).notification_prefs) {
       try {
         const saved = JSON.parse((profile as any).notification_prefs);
@@ -181,7 +188,9 @@ export default function Settings() {
 
   if (loading || !profile || !form) return <PageLoader />;
 
-  const roleMeta = ROLE_META[role ?? "user"];
+  // FIX: fallback to 'user' if role is somehow undefined rather than crashing
+  const resolvedRole: AppRole = (role && role in ROLE_META) ? role : 'user';
+  const roleMeta = ROLE_META[resolvedRole];
 
   return (
     <div className="space-y-6">
@@ -270,7 +279,7 @@ export default function Settings() {
               <div key={r} className="flex items-center gap-2">
                 <Badge className={meta.color}>{meta.label}</Badge>
                 <span className="text-muted-foreground">{meta.description}</span>
-                {r === role && <span className="text-xs text-muted-foreground ml-auto">(you)</span>}
+                {r === resolvedRole && <span className="text-xs text-muted-foreground ml-auto">(you)</span>}
               </div>
             ))}
           </div>
@@ -328,7 +337,7 @@ export default function Settings() {
         </div>
 
         <p className="mt-4 text-xs text-muted-foreground">
-          Email notifications require SendGrid to be connected in Admin → Integrations (Step 12).
+          Email notifications require SendGrid to be connected in Admin → Integrations.
           In-app notifications appear as toast alerts while you're using the app.
         </p>
       </div>

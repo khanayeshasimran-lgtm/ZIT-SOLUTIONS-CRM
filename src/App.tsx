@@ -1,45 +1,13 @@
-/**
- * src/App.tsx
- *
- * DAY 2 — C7: Fixed ProtectedRoutes auth race condition.
- * DAY 1 (carried forward): TourProvider added, providers correctly ordered.
- *
- * C7 — WHAT THE OLD CODE DID (WRONG):
- *   useEffect fired when: loading === false AND session exists AND profile exists.
- *   But AuthContext resolves `loading = false` as soon as the SESSION is known —
- *   profile loads in the background AFTER loading becomes false.
- *   This created a window where:
- *     loading = false  ✓
- *     session = exists ✓
- *     profile = null   ← profile hasn't arrived from DB yet
- *   The effect fired, saw organization_id as undefined (null profile), and
- *   redirected EVERY user to /onboarding on every hard refresh.
- *   Users who had completed onboarding were still redirected every time.
- *
- * C7 — THE FIX:
- *   Guard condition now requires ALL THREE to be truthy before the redirect:
- *     !loading && session && profile   (profile must be loaded, not null)
- *   If profile is null, the effect does nothing and waits for the next
- *   re-render (which fires when profile arrives from the background fetch).
- *   Only THEN does it check organization_id and redirect if needed.
- *
- * PROVIDER ORDER (correct):
- *   QueryClientProvider          — must be outermost (React Query)
- *     UIPreferencesProvider      — no dependencies
- *       AuthProvider             — Supabase auth, exposes user/profile/role
- *         OrganizationProvider   — reads useAuth(), must be inside AuthProvider
- *           TourProvider         — needs to be inside layout context
- *             TooltipProvider    — shadcn/ui tooltips
- *               BrowserRouter    — routing
- *                 Routes         — page routing
- */
+// src/App.tsx
+// KEY CHANGE: No forced onboarding redirect. New signups see PendingAccess screen
+// with a choice: "I'm staff" → /onboarding | "I'm a client" → /portal/auth
 
 import { Toaster }             from '@/components/ui/toaster';
 import { Toaster as Sonner }   from '@/components/ui/sonner';
 import { TooltipProvider }     from '@/components/ui/tooltip';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools }  from '@tanstack/react-query-devtools';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth }         from '@/contexts/AuthContext';
 import { OrganizationProvider }          from '@/contexts/OrganizationContext';
 import { TourProvider }                  from '@/contexts/TourContext';
@@ -49,10 +17,7 @@ import { AdminGuard }                    from '@/components/AdminGuard';
 import { PageLoader }                    from '@/components/PageLoader';
 import { ErrorBoundary }                 from '@/lib/errorBoundary';
 import { queryClient }                   from '@/lib/queryClient';
-import { useEffect }                     from 'react';
-import { useNavigate }                   from 'react-router-dom';
-
-// ── Pages ─────────────────────────────────────────────────────────────────────
+import { Building2, LogIn, Zap, ArrowRight, LogOut } from 'lucide-react';
 
 import Auth            from './pages/Auth';
 import Dashboard       from './pages/Dashboard';
@@ -87,50 +52,116 @@ import InvestorDashboard               from './pages/investor/InvestorDashboard'
 import { PortalAuth, PortalDashboard } from './pages/portal/Portal';
 import Onboarding                      from './pages/onboarding/Onboarding';
 
-// ── Protected route wrapper ───────────────────────────────────────────────────
+// Shown to logged-in users with no org yet — lets them choose their path
+function PendingAccess() {
+  const { signOut, user } = useAuth();
+  const navigate = useNavigate();
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-950 via-slate-900 to-slate-950 flex items-center justify-center p-4">
+      <div
+        className="absolute inset-0 opacity-[0.03] pointer-events-none"
+        style={{
+          backgroundImage:
+            'linear-gradient(rgba(255,255,255,0.8) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.8) 1px, transparent 1px)',
+          backgroundSize: '32px 32px',
+        }}
+      />
+      <div className="relative w-full max-w-md space-y-8">
+        <div className="flex items-center justify-center gap-3">
+          <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+            <Zap className="h-5 w-5 text-white" />
+          </div>
+          <span className="text-white font-bold text-xl">Z IT Solutions CRM</span>
+        </div>
+
+        <div className="bg-white/[0.04] backdrop-blur-xl border border-white/[0.08] rounded-2xl p-8 shadow-2xl space-y-6">
+          <div className="text-center">
+            <p className="text-white/50 text-sm">Signed in as</p>
+            <p className="text-white font-medium mt-0.5">{user?.email}</p>
+          </div>
+
+          <div className="h-px bg-white/[0.08]" />
+
+          <div className="text-center space-y-1">
+            <p className="text-lg font-bold text-white">What would you like to do?</p>
+            <p className="text-white/50 text-sm">Choose how you want to access the platform.</p>
+          </div>
+
+          <button
+            onClick={() => navigate('/onboarding')}
+            className="w-full group flex items-center gap-4 bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 hover:border-indigo-500/60 rounded-xl p-4 transition-all text-left"
+          >
+            <div className="h-10 w-10 rounded-lg bg-indigo-600/40 flex items-center justify-center shrink-0">
+              <Building2 className="h-5 w-5 text-indigo-300" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-white font-semibold text-sm">I'm a staff member</p>
+              <p className="text-white/50 text-xs mt-0.5">Create or join a workspace to access the CRM</p>
+            </div>
+            <ArrowRight className="h-4 w-4 text-white/40 group-hover:text-white/70 shrink-0 transition-colors" />
+          </button>
+
+          <button
+            onClick={() => navigate('/portal/auth')}
+            className="w-full group flex items-center gap-4 bg-teal-600/10 hover:bg-teal-600/20 border border-teal-500/20 hover:border-teal-500/40 rounded-xl p-4 transition-all text-left"
+          >
+            <div className="h-10 w-10 rounded-lg bg-teal-600/30 flex items-center justify-center shrink-0">
+              <LogIn className="h-5 w-5 text-teal-300" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-white font-semibold text-sm">I'm a client</p>
+              <p className="text-white/50 text-xs mt-0.5">Access the client portal instead</p>
+            </div>
+            <ArrowRight className="h-4 w-4 text-white/40 group-hover:text-white/70 shrink-0 transition-colors" />
+          </button>
+
+          <div className="h-px bg-white/[0.08]" />
+
+          <button
+            onClick={async () => { await signOut(); navigate('/auth', { replace: true }); }}
+            className="flex items-center gap-1.5 text-sm text-white/30 hover:text-red-400 transition-colors mx-auto"
+          >
+            <LogOut className="h-3.5 w-3.5" />Sign out
+          </button>
+        </div>
+
+        <p className="text-center text-white/20 text-xs">
+          Invited by your admin? Choose "I'm a staff member" and enter your invite code.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const PortalGuard = () => {
+  const { session, profile, loading } = useAuth();
+  if (loading)  return <PageLoader />;
+  if (!session) return <Navigate to="/portal/auth" replace />;
+  if (!profile) return <PageLoader />;
+  if (profile.role !== 'client') return <Navigate to="/dashboard" replace />;
+  return <PortalDashboard />;
+};
+
+const OnboardingGuard = () => {
+  const { session, profile, loading } = useAuth();
+  if (loading)  return <PageLoader />;
+  if (!session) return <Navigate to="/auth" replace />;
+  if (!profile) return <PageLoader />;
+  if (profile.role === 'client')  return <Navigate to="/portal" replace />;
+  if (profile.organization_id)    return <Navigate to="/dashboard" replace />;
+  return <Onboarding />;
+};
 
 const ProtectedRoutes = () => {
   const { session, profile, loading } = useAuth();
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    // C7 FIX: All three conditions must be true before we check org status.
-    //
-    // OLD (wrong):
-    //   if (!loading && session && profile) { ... }
-    //   Problem: loading becomes false BEFORE profile loads from the DB.
-    //   When profile is null, organization_id is undefined, redirect fires.
-    //
-    // NEW (correct):
-    //   Require profile to be non-null before reading organization_id.
-    //   If profile hasn't loaded yet (!profile), do nothing — the effect
-    //   will re-run when profile arrives (AuthContext calls setProfile async).
-    if (loading) return;          // session not yet resolved — wait
-    if (!session) return;         // not logged in — handled by Navigate below
-    if (!profile) return;         // ← C7 FIX: profile not yet loaded — wait
-
-    // Profile is fully loaded. Now check org and role.
-    const hasOrg   = !!(profile as any).organization_id;
-    const isClient = profile.role === 'client';
-
-    // Client role never needs an organization (they access via portal)
-    if (!hasOrg && !isClient) {
-      navigate('/onboarding', { replace: true });
-    }
-  }, [session, profile, loading, navigate]);
-
-  // Still resolving auth session
-  if (loading) return <PageLoader />;
-
-  // Not authenticated — send to auth page
+  if (loading)  return <PageLoader />;
   if (!session) return <Navigate to="/auth" replace />;
-
-  // Authenticated — render the layout (profile may still be loading in BG,
-  // but DashboardLayout handles its own loading state via PageLoader)
+  if (!profile) return <PageLoader />;
+  if (profile.role === 'client')    return <Navigate to="/portal" replace />;
+  if (!profile.organization_id)     return <PendingAccess />;
   return <DashboardLayout />;
 };
-
-// ── App ───────────────────────────────────────────────────────────────────────
 
 const App = () => (
   <ErrorBoundary>
@@ -138,23 +169,18 @@ const App = () => (
       <UIPreferencesProvider>
         <AuthProvider>
           <OrganizationProvider>
-            {/* TourProvider: was missing entirely — caused useTour() to throw */}
             <TourProvider>
               <TooltipProvider>
                 <Toaster />
                 <Sonner />
                 <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
                   <Routes>
-
                     <Route path="/" element={<Navigate to="/dashboard" replace />} />
-
-                    {/* Public routes */}
                     <Route path="/auth"        element={<Auth />} />
-                    <Route path="/onboarding"  element={<Onboarding />} />
                     <Route path="/portal/auth" element={<PortalAuth />} />
-                    <Route path="/portal"      element={<PortalDashboard />} />
+                    <Route path="/portal"      element={<PortalGuard />} />
+                    <Route path="/onboarding"  element={<OnboardingGuard />} />
 
-                    {/* Protected routes — all under ProtectedRoutes which renders DashboardLayout */}
                     <Route element={<ProtectedRoutes />}>
                       <Route path="/dashboard"        element={<Dashboard />} />
                       <Route path="/leads"            element={<Leads />} />
@@ -178,8 +204,6 @@ const App = () => (
                       <Route path="/reports"          element={<Reports />} />
                       <Route path="/settings"         element={<Settings />} />
                       <Route path="/investor"         element={<InvestorDashboard />} />
-
-                      {/* Admin-only routes — wrapped in AdminGuard */}
                       <Route path="/admin/users"           element={<AdminGuard><Users /></AdminGuard>} />
                       <Route path="/admin/audit-logs"      element={<AdminGuard><AuditLogs /></AdminGuard>} />
                       <Route path="/admin/investor-config" element={<AdminGuard><InvestorConfig /></AdminGuard>} />
@@ -189,7 +213,6 @@ const App = () => (
                     <Route path="*" element={<NotFound />} />
                   </Routes>
                 </BrowserRouter>
-
                 {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
               </TooltipProvider>
             </TourProvider>

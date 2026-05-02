@@ -1,19 +1,26 @@
 /**
  * pages/portal/Portal.tsx
  *
- * Enhanced Client Portal — Tier 4
+ * FIXES IN THIS VERSION:
  *
- * NEW vs original:
- *   ✅ Real-time project tracking — task breakdown by status, live progress
- *   ✅ Communication history — all activities + meetings linked to company
- *   ✅ Client notifications — in-app alerts for ticket updates, invoice due
- *   ✅ Document access — files attached to company projects/deals
- *   ✅ Invoice payment links (Stripe/Razorpay if configured)
- *   ✅ Realtime subscription — ticket status updates push live
- *   ✅ Better UI — tabbed layout, status timeline, activity feed
+ *   FIX 1 — Race condition: loadData now waits for profile to arrive.
+ *     AuthContext fetches profile in the background after auth state resolves.
+ *     The old useEffect([loadData]) ran immediately on mount when profile was
+ *     still null, so companyId was undefined, and loadData bailed silently.
+ *     Fix: add `profile` to the useEffect dependency array so loadData re-runs
+ *     once the profile is actually populated.
+ *
+ *   FIX 2 — Spinner no longer blocks forever when companyId is null.
+ *     If profile is loaded but company_id is not set, setLoading(false) so
+ *     the user sees a clear "no company linked" error instead of an infinite
+ *     spinner. Gives them instructions and a sign-out button.
+ *
+ *   FIX 3 — Loading state only shows before profile arrives.
+ *     Once profile is loaded, we either show the no-company error or the
+ *     dashboard. No more stuck "Loading your portal…" screen.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
@@ -30,9 +37,9 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import {
   FolderKanban, Ticket, FileText, LogOut, Building2,
-  Plus, Bell, BellOff, CheckCircle2, Clock, AlertCircle,
+  Plus, Bell, CheckCircle2, Clock, AlertCircle,
   MessageSquare, Video, Phone, Mail, Download, ExternalLink,
-  ChevronRight, Activity, FolderOpen, CreditCard, RefreshCw,
+  ChevronRight, Activity, FolderOpen, CreditCard,
   Circle, CheckCircle, XCircle, Loader,
 } from 'lucide-react';
 import { format, formatDistanceToNow, parseISO } from 'date-fns';
@@ -134,19 +141,19 @@ function formatBytes(bytes: number): string {
 }
 
 const STATUS_PILLS: Record<string, string> = {
-  open:               'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200',
-  in_progress:        'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
-  resolved:           'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
-  closed:             'bg-slate-100 text-slate-500 ring-1 ring-slate-200',
-  draft:              'bg-slate-100 text-slate-500 ring-1 ring-slate-200',
-  sent:               'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
-  paid:               'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
-  overdue:            'bg-red-50 text-red-700 ring-1 ring-red-200',
-  active:             'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
-  completed:          'bg-sky-50 text-sky-700 ring-1 ring-sky-200',
-  on_hold:            'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
-  scheduled:          'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
-  cancelled:          'bg-slate-100 text-slate-500 ring-1 ring-slate-200',
+  open:        'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200',
+  in_progress: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
+  resolved:    'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
+  closed:      'bg-slate-100 text-slate-500 ring-1 ring-slate-200',
+  draft:       'bg-slate-100 text-slate-500 ring-1 ring-slate-200',
+  sent:        'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
+  paid:        'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
+  overdue:     'bg-red-50 text-red-700 ring-1 ring-red-200',
+  active:      'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
+  completed:   'bg-sky-50 text-sky-700 ring-1 ring-sky-200',
+  on_hold:     'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
+  scheduled:   'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
+  cancelled:   'bg-slate-100 text-slate-500 ring-1 ring-slate-200',
 };
 
 const PRIORITY_PILLS: Record<string, string> = {
@@ -223,7 +230,7 @@ export function PortalAuth() {
             </div>
             <div className="space-y-2">
               <Label>Password</Label>
-              <Input type="password" required placeholder="••••••••"
+              <Input type="password" required autoComplete="current-password" placeholder="••••••••"
                 value={password} onChange={e => setPassword(e.target.value)} />
             </div>
             <Button type="submit" className="w-full h-11" disabled={loading}>
@@ -265,107 +272,120 @@ export function PortalDashboard() {
   const [newTicket, setNewTicket] = useState({ title: '', description: '', category: 'support' });
   const [submitting, setSubmitting] = useState(false);
 
-  // Auth guard
+  // Auth guard — redirect non-clients
   useEffect(() => {
     if (!user) { navigate('/portal/auth', { replace: true }); return; }
     if (profile && (profile as any).role !== 'client') navigate('/dashboard', { replace: true });
   }, [user, profile, navigate]);
 
-  const companyId  = (profile as any)?.company_id   as string | null;
-  const orgId      = (profile as any)?.organization_id as string | null;
+  const companyId   = (profile as any)?.company_id    as string | null | undefined;
+  const orgId       = (profile as any)?.organization_id as string | null | undefined;
   const companyName = (profile as any)?.company ?? 'Your Company';
 
   // ── Load all data ──────────────────────────────────────────────────────────
 
   const loadData = useCallback(async () => {
-    if (!user || !companyId) return;
+    if (!user) return;
 
-    const [
-      { data: proj },
-      { data: tick },
-      { data: inv },
-      { data: acts },
-      { data: meets },
-      { data: docs },
-      { data: notifs },
-    ] = await Promise.all([
-      // Projects
-      (supabase as any).from('projects').select('id, name, description, status, start_date, end_date')
-        .eq('organization_id', orgId).limit(20),
+    // FIX 2: If profile is loaded but company_id is not set, stop the spinner
+    // and show the no-company error state instead of loading forever.
+    if (!companyId) {
+      setLoading(false);
+      return;
+    }
 
-      // Tickets for this company
-      (supabase as any).from('tickets')
-        .select('id, title, description, status, priority, category, created_at, updated_at')
-        .eq('company_id', companyId).order('created_at', { ascending: false }),
+    try {
+      const [
+        { data: proj },
+        { data: tick },
+        { data: inv },
+        { data: acts },
+        { data: meets },
+        { data: docs },
+        { data: notifs },
+      ] = await Promise.all([
+        (supabase as any).from('projects')
+          .select('id, name, description, status, start_date, end_date')
+          .eq('organization_id', orgId).limit(20),
 
-      // Invoices for this company
-      (supabase as any).from('invoices')
-        .select('id, invoice_number, total, status, currency, due_date, paid_at, created_at, stripe_payment_link, razorpay_payment_link')
-        .eq('company_id', companyId).order('created_at', { ascending: false }),
+        (supabase as any).from('tickets')
+          .select('id, title, description, status, priority, category, created_at, updated_at')
+          .eq('company_id', companyId).order('created_at', { ascending: false }),
 
-      // Activities linked to this company's contacts/leads
-      (supabase as any).from('activities')
-        .select('id, type, title, description, status, due_date, created_at')
-        .eq('organization_id', orgId)
-        .order('created_at', { ascending: false }).limit(30),
+        (supabase as any).from('invoices')
+          .select('id, invoice_number, total, status, currency, due_date, paid_at, created_at, stripe_payment_link, razorpay_payment_link')
+          .eq('company_id', companyId).order('created_at', { ascending: false }),
 
-      // Meetings linked to this company
-      (supabase as any).from('meetings')
-        .select('id, title, meeting_type, status, mode, start_time, end_time, video_link, notes')
-        .eq('company_id', companyId).order('start_time', { ascending: false }).limit(20),
+        (supabase as any).from('activities')
+          .select('id, type, title, description, status, due_date, created_at')
+          .eq('organization_id', orgId)
+          .order('created_at', { ascending: false }).limit(30),
 
-      // Documents linked to this company
-      (supabase as any).from('documents')
-        .select('id, name, file_path, file_size, mime_type, entity_type, created_at')
-        .eq('organization_id', orgId).order('created_at', { ascending: false }).limit(50),
+        (supabase as any).from('meetings')
+          .select('id, title, meeting_type, status, mode, start_time, end_time, video_link, notes')
+          .eq('company_id', companyId).order('start_time', { ascending: false }).limit(20),
 
-      // In-app notifications for this user
-      (supabase as any).from('notifications')
-        .select('id, title, body, event, is_read, created_at')
-        .eq('user_id', user.id).order('created_at', { ascending: false }).limit(20),
-    ]);
+        (supabase as any).from('documents')
+          .select('id, name, file_path, file_size, mime_type, entity_type, created_at')
+          .eq('organization_id', orgId).order('created_at', { ascending: false }).limit(50),
 
-    // Enrich projects with task counts
-    const projWithTasks: PortalProject[] = await Promise.all(
-      ((proj ?? []) as any[]).map(async (p: any) => {
-        const [
-          { count: total },
-          { count: todo },
-          { count: inprog },
-          { count: done },
-        ] = await Promise.all([
-          (supabase as any).from('project_tasks').select('id', { count: 'exact', head: true }).eq('project_id', p.id),
-          (supabase as any).from('project_tasks').select('id', { count: 'exact', head: true }).eq('project_id', p.id).eq('status', 'todo'),
-          (supabase as any).from('project_tasks').select('id', { count: 'exact', head: true }).eq('project_id', p.id).eq('status', 'in_progress'),
-          (supabase as any).from('project_tasks').select('id', { count: 'exact', head: true }).eq('project_id', p.id).eq('status', 'done'),
-        ]);
-        return {
-          ...p,
-          tasks_total:       total      ?? 0,
-          tasks_todo:        todo       ?? 0,
-          tasks_in_progress: inprog     ?? 0,
-          tasks_done:        done       ?? 0,
-        };
-      })
-    );
+        (supabase as any).from('notifications')
+          .select('id, title, body, event, is_read, created_at')
+          .eq('user_id', user.id).order('created_at', { ascending: false }).limit(20),
+      ]);
 
-    setProjects(projWithTasks);
-    setTickets((tick ?? []) as PortalTicket[]);
-    setInvoices(((inv ?? []) as any[]).map((i: any) => ({
-      ...i,
-      status: i.status === 'sent' && i.due_date && new Date(i.due_date) < new Date() ? 'overdue' : i.status,
-    })));
-    setActivities((acts ?? []) as PortalActivity[]);
-    setMeetings((meets ?? []) as PortalMeeting[]);
-    setDocuments((docs ?? []) as PortalDocument[]);
-    setNotifications((notifs ?? []) as PortalNotification[]);
-    setLoading(false);
+      // Enrich projects with task counts
+      const projWithTasks: PortalProject[] = await Promise.all(
+        ((proj ?? []) as any[]).map(async (p: any) => {
+          const [
+            { count: total },
+            { count: todo },
+            { count: inprog },
+            { count: done },
+          ] = await Promise.all([
+            (supabase as any).from('project_tasks').select('id', { count: 'exact', head: true }).eq('project_id', p.id),
+            (supabase as any).from('project_tasks').select('id', { count: 'exact', head: true }).eq('project_id', p.id).eq('status', 'todo'),
+            (supabase as any).from('project_tasks').select('id', { count: 'exact', head: true }).eq('project_id', p.id).eq('status', 'in_progress'),
+            (supabase as any).from('project_tasks').select('id', { count: 'exact', head: true }).eq('project_id', p.id).eq('status', 'done'),
+          ]);
+          return {
+            ...p,
+            tasks_total:       total  ?? 0,
+            tasks_todo:        todo   ?? 0,
+            tasks_in_progress: inprog ?? 0,
+            tasks_done:        done   ?? 0,
+          };
+        })
+      );
+
+      setProjects(projWithTasks);
+      setTickets((tick ?? []) as PortalTicket[]);
+      setInvoices(((inv ?? []) as any[]).map((i: any) => ({
+        ...i,
+        status: i.status === 'sent' && i.due_date && new Date(i.due_date) < new Date()
+          ? 'overdue' : i.status,
+      })));
+      setActivities((acts  ?? []) as PortalActivity[]);
+      setMeetings((meets   ?? []) as PortalMeeting[]);
+      setDocuments((docs   ?? []) as PortalDocument[]);
+      setNotifications((notifs ?? []) as PortalNotification[]);
+    } catch (err: any) {
+      console.error('[Portal] loadData error:', err);
+      toast({ variant: 'destructive', title: 'Failed to load portal data', description: err.message });
+    } finally {
+      setLoading(false);
+    }
   }, [user, companyId, orgId]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  // FIX 1: Add `profile` to the dependency array so loadData re-runs once the
+  // profile has actually loaded from the DB. Without this, loadData runs on
+  // mount when profile is still null, companyId is undefined, and it bails
+  // silently — never retrying.
+  useEffect(() => {
+    if (profile) loadData();
+  }, [loadData, profile]);
 
   // ── Realtime — ticket updates ──────────────────────────────────────────────
-
   useEffect(() => {
     if (!companyId) return;
     const channel = supabase
@@ -377,30 +397,35 @@ export function PortalDashboard() {
         setTickets(prev => prev.map(t =>
           t.id === payload.new.id ? { ...t, ...payload.new } : t
         ));
-        toast({ title: `Ticket updated: ${(payload.new as any).title}`, description: `Status: ${(payload.new as any).status}` });
+        toast({
+          title: `Ticket updated: ${(payload.new as any).title}`,
+          description: `Status: ${(payload.new as any).status}`,
+        });
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [companyId]);
 
   // ── Submit ticket ──────────────────────────────────────────────────────────
-
   const handleSubmitTicket = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTicket.title.trim()) return;
     setSubmitting(true);
     const { error } = await (supabase as any).from('tickets').insert({
-      title:       newTicket.title.trim(),
-      description: newTicket.description.trim() || null,
-      category:    newTicket.category,
-      priority:    'medium',
-      status:      'open',
-      company_id:  companyId,
-      created_by:  user?.id,
+      title:           newTicket.title.trim(),
+      description:     newTicket.description.trim() || null,
+      category:        newTicket.category,
+      priority:        'medium',
+      status:          'open',
+      company_id:      companyId,
+      created_by:      user?.id,
       organization_id: orgId,
     });
     setSubmitting(false);
-    if (error) { toast({ variant: 'destructive', title: 'Error', description: error.message }); return; }
+    if (error) {
+      toast({ variant: 'destructive', title: 'Error', description: error.message });
+      return;
+    }
     toast({ title: 'Ticket submitted ✓', description: 'Our team will be in touch soon.' });
     setNewTicket({ title: '', description: '', category: 'support' });
     setTicketDialogOpen(false);
@@ -408,7 +433,6 @@ export function PortalDashboard() {
   };
 
   // ── Mark notifications read ────────────────────────────────────────────────
-
   const markAllRead = async () => {
     const unreadIds = notifications.filter(n => !n.is_read).map(n => n.id);
     if (!unreadIds.length) return;
@@ -417,14 +441,57 @@ export function PortalDashboard() {
   };
 
   // ── Download document ──────────────────────────────────────────────────────
-
   const handleDownload = async (doc: PortalDocument) => {
     const { data, error } = await supabase.storage.from('documents').createSignedUrl(doc.file_path, 60);
-    if (error || !data?.signedUrl) { toast({ variant: 'destructive', title: 'Download failed' }); return; }
+    if (error || !data?.signedUrl) {
+      toast({ variant: 'destructive', title: 'Download failed' });
+      return;
+    }
     const a = document.createElement('a');
     a.href = data.signedUrl; a.download = doc.name; a.target = '_blank'; a.click();
   };
 
+  // ── FIX 3: Only show full-page spinner before profile arrives ─────────────
+  if (!profile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-12 w-12 rounded-xl bg-indigo-100 flex items-center justify-center animate-pulse">
+            <Building2 className="h-6 w-6 text-indigo-500" />
+          </div>
+          <p className="text-sm text-slate-400">Loading your portal…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // FIX 2: Profile loaded but no company assigned — show actionable error
+  if (!companyId) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+        <div className="text-center space-y-4 max-w-sm">
+          <div className="h-16 w-16 rounded-full bg-amber-50 flex items-center justify-center mx-auto">
+            <AlertCircle className="h-8 w-8 text-amber-500" />
+          </div>
+          <div>
+            <p className="text-slate-800 font-semibold text-lg">No company linked</p>
+            <p className="text-sm text-slate-500 mt-1">
+              Your account hasn't been linked to a company yet. Ask your admin to assign you
+              to a company in <strong>Admin → Users</strong>.
+            </p>
+          </div>
+          <button
+            onClick={async () => { await signOut(); navigate('/portal/auth'); }}
+            className="flex items-center gap-1.5 text-sm text-red-500 hover:underline mx-auto"
+          >
+            <LogOut className="h-3.5 w-3.5" />Sign out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Data still fetching after profile arrived
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -440,22 +507,20 @@ export function PortalDashboard() {
 
   const unreadCount = notifications.filter(n => !n.is_read).length;
 
-  // ── Summary stats ──────────────────────────────────────────────────────────
-
   const stats = [
-    { label: 'Active projects',  value: projects.filter(p => p.status === 'active').length,                                             icon: FolderKanban, color: 'text-indigo-600', bg: 'bg-indigo-50'  },
-    { label: 'Open tickets',     value: tickets.filter(t => ['open','in_progress'].includes(t.status)).length,                           icon: Ticket,       color: 'text-amber-600',  bg: 'bg-amber-50'   },
-    { label: 'Pending invoices', value: invoices.filter(i => ['sent','overdue'].includes(i.status)).length,                              icon: FileText,     color: 'text-emerald-600',bg: 'bg-emerald-50' },
-    { label: 'Documents',        value: documents.length,                                                                                icon: FolderOpen,   color: 'text-violet-600', bg: 'bg-violet-50'  },
+    { label: 'Active projects',  value: projects.filter(p => p.status === 'active').length,                           icon: FolderKanban, color: 'text-indigo-600',  bg: 'bg-indigo-50'  },
+    { label: 'Open tickets',     value: tickets.filter(t => ['open','in_progress'].includes(t.status)).length,         icon: Ticket,       color: 'text-amber-600',   bg: 'bg-amber-50'   },
+    { label: 'Pending invoices', value: invoices.filter(i => ['sent','overdue'].includes(i.status)).length,            icon: FileText,     color: 'text-emerald-600', bg: 'bg-emerald-50' },
+    { label: 'Documents',        value: documents.length,                                                              icon: FolderOpen,   color: 'text-violet-600',  bg: 'bg-violet-50'  },
   ];
 
   const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
-    { id: 'overview',  label: 'Overview',   icon: Building2    },
-    { id: 'projects',  label: 'Projects',   icon: FolderKanban },
-    { id: 'tickets',   label: 'Tickets',    icon: Ticket       },
-    { id: 'invoices',  label: 'Invoices',   icon: FileText     },
-    { id: 'activity',  label: 'Activity',   icon: Activity     },
-    { id: 'documents', label: 'Documents',  icon: FolderOpen   },
+    { id: 'overview',  label: 'Overview',  icon: Building2    },
+    { id: 'projects',  label: 'Projects',  icon: FolderKanban },
+    { id: 'tickets',   label: 'Tickets',   icon: Ticket       },
+    { id: 'invoices',  label: 'Invoices',  icon: FileText     },
+    { id: 'activity',  label: 'Activity',  icon: Activity     },
+    { id: 'documents', label: 'Documents', icon: FolderOpen   },
   ];
 
   return (
@@ -489,7 +554,6 @@ export function PortalDashboard() {
                 )}
               </button>
 
-              {/* Notification dropdown */}
               {notifOpen && (
                 <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-xl border border-slate-200 shadow-lg shadow-slate-200/60 z-20 overflow-hidden">
                   <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
@@ -501,10 +565,7 @@ export function PortalDashboard() {
                       <div className="p-6 text-center text-sm text-slate-400">No notifications yet</div>
                     ) : (
                       notifications.map(n => (
-                        <div
-                          key={n.id}
-                          className={`px-4 py-3 border-b border-slate-50 last:border-0 ${n.is_read ? '' : 'bg-indigo-50/40'}`}
-                        >
+                        <div key={n.id} className={`px-4 py-3 border-b border-slate-50 last:border-0 ${n.is_read ? '' : 'bg-indigo-50/40'}`}>
                           <p className="text-sm font-medium text-slate-800">{n.title}</p>
                           <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{n.body}</p>
                           <p className="text-[10px] text-slate-400 mt-1">
@@ -518,16 +579,14 @@ export function PortalDashboard() {
               )}
             </div>
 
-            {/* User + sign out */}
+            {/* User */}
             <div className="flex items-center gap-2">
               <div className="h-7 w-7 rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 flex items-center justify-center text-white text-[11px] font-bold">
                 {(profile?.full_name || user?.email || 'C').charAt(0).toUpperCase()}
               </div>
-              {!loading && (
-                <span className="text-sm text-slate-600 hidden sm:block">
-                  {profile?.full_name?.split(' ')[0] ?? user?.email?.split('@')[0]}
-                </span>
-              )}
+              <span className="text-sm text-slate-600 hidden sm:block">
+                {profile?.full_name?.split(' ')[0] ?? user?.email?.split('@')[0]}
+              </span>
             </div>
 
             <button
@@ -574,7 +633,6 @@ export function PortalDashboard() {
               <p className="text-slate-500 mt-1">Here's what's happening with your projects and support.</p>
             </div>
 
-            {/* Stats */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {stats.map(s => (
                 <button
@@ -603,8 +661,7 @@ export function PortalDashboard() {
               <div className="bg-white border border-slate-200/80 rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
                   <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                    <FolderKanban className="h-4 w-4 text-indigo-500" />
-                    Active Projects
+                    <FolderKanban className="h-4 w-4 text-indigo-500" />Active Projects
                   </h2>
                   <button onClick={() => setActiveTab('projects')} className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
                     View all <ChevronRight className="h-3 w-3" />
@@ -639,8 +696,7 @@ export function PortalDashboard() {
               <div className="bg-white border border-slate-200/80 rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
                   <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                    <Ticket className="h-4 w-4 text-amber-500" />
-                    Recent Tickets
+                    <Ticket className="h-4 w-4 text-amber-500" />Recent Tickets
                   </h2>
                   <button onClick={() => setActiveTab('tickets')} className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
                     View all <ChevronRight className="h-3 w-3" />
@@ -651,9 +707,7 @@ export function PortalDashboard() {
                     <div key={t.id} className="px-5 py-3 flex items-center justify-between">
                       <div>
                         <p className="text-sm font-medium text-slate-800">{t.title}</p>
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          {format(new Date(t.created_at), 'MMM d, yyyy')}
-                        </p>
+                        <p className="text-xs text-slate-400 mt-0.5">{format(new Date(t.created_at), 'MMM d, yyyy')}</p>
                       </div>
                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${STATUS_PILLS[t.status] ?? STATUS_PILLS.open}`}>
                         {t.status.replace('_', ' ')}
@@ -669,8 +723,7 @@ export function PortalDashboard() {
               <div className="bg-white border border-slate-200/80 rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-100">
                   <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                    <Clock className="h-4 w-4 text-blue-500" />
-                    Upcoming Meetings
+                    <Clock className="h-4 w-4 text-blue-500" />Upcoming Meetings
                   </h2>
                 </div>
                 <div className="divide-y divide-slate-50">
@@ -691,10 +744,8 @@ export function PortalDashboard() {
                             </p>
                           </div>
                           {m.video_link && (
-                            <a
-                              href={m.video_link} target="_blank" rel="noopener noreferrer"
-                              className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors shrink-0"
-                            >
+                            <a href={m.video_link} target="_blank" rel="noopener noreferrer"
+                              className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors shrink-0">
                               <Video className="h-3.5 w-3.5" />Join
                             </a>
                           )}
@@ -702,6 +753,15 @@ export function PortalDashboard() {
                       );
                     })}
                 </div>
+              </div>
+            )}
+
+            {/* Empty state */}
+            {projects.length === 0 && tickets.length === 0 && invoices.length === 0 && (
+              <div className="bg-white border border-dashed border-slate-200 rounded-xl p-12 text-center text-slate-400">
+                <Building2 className="h-8 w-8 mx-auto mb-3 opacity-40" />
+                <p className="font-medium">Your portal is ready</p>
+                <p className="text-sm mt-1">Data will appear here once your team adds projects, tickets, or invoices linked to your company.</p>
               </div>
             )}
           </>
@@ -734,7 +794,6 @@ export function PortalDashboard() {
                     </span>
                   </div>
 
-                  {/* Progress bar */}
                   {p.tasks_total > 0 ? (
                     <div>
                       <div className="flex items-center justify-between text-xs text-slate-500 mb-2">
@@ -742,23 +801,18 @@ export function PortalDashboard() {
                         <span>{pct}% complete · {p.tasks_done}/{p.tasks_total} tasks</span>
                       </div>
                       <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                        <div
-                          className="h-full rounded-full transition-all duration-700"
-                          style={{
-                            width: `${pct}%`,
-                            background: pct === 100
-                              ? 'linear-gradient(to right, #10b981, #059669)'
-                              : 'linear-gradient(to right, #6366f1, #8b5cf6)',
-                          }}
-                        />
+                        <div className="h-full rounded-full transition-all duration-700" style={{
+                          width: `${pct}%`,
+                          background: pct === 100
+                            ? 'linear-gradient(to right, #10b981, #059669)'
+                            : 'linear-gradient(to right, #6366f1, #8b5cf6)',
+                        }} />
                       </div>
-
-                      {/* Task breakdown */}
                       <div className="grid grid-cols-3 gap-3 mt-3">
                         {[
                           { label: 'To Do',       count: p.tasks_todo,        icon: Circle,      color: 'text-slate-400',   bg: 'bg-slate-50'   },
-                          { label: 'In Progress',  count: p.tasks_in_progress, icon: Loader,      color: 'text-amber-500',   bg: 'bg-amber-50'   },
-                          { label: 'Done',         count: p.tasks_done,        icon: CheckCircle, color: 'text-emerald-500', bg: 'bg-emerald-50' },
+                          { label: 'In Progress', count: p.tasks_in_progress, icon: Loader,      color: 'text-amber-500',   bg: 'bg-amber-50'   },
+                          { label: 'Done',        count: p.tasks_done,        icon: CheckCircle, color: 'text-emerald-500', bg: 'bg-emerald-50' },
                         ].map(s => (
                           <div key={s.label} className={`${s.bg} rounded-lg p-3 flex items-center gap-2`}>
                             <s.icon className={`h-4 w-4 ${s.color} shrink-0`} />
@@ -838,9 +892,7 @@ export function PortalDashboard() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-slate-800">{t.title}</p>
-                    {t.description && (
-                      <p className="text-sm text-slate-500 mt-1 line-clamp-2">{t.description}</p>
-                    )}
+                    {t.description && <p className="text-sm text-slate-500 mt-1 line-clamp-2">{t.description}</p>}
                     <div className="flex items-center gap-3 mt-2 text-xs text-slate-400 flex-wrap">
                       <span className="capitalize">{t.category ?? 'support'}</span>
                       <span>·</span>
@@ -867,13 +919,11 @@ export function PortalDashboard() {
         {activeTab === 'invoices' && (
           <div className="space-y-4">
             <h2 className="text-lg font-bold text-slate-800">Invoices</h2>
-
             {invoices.length === 0 && (
               <div className="bg-white border border-dashed border-slate-200 rounded-xl p-12 text-center text-slate-400">
                 No invoices yet.
               </div>
             )}
-
             {invoices.map(inv => (
               <div key={inv.id} className={`bg-white border rounded-xl p-5 ${inv.status === 'overdue' ? 'border-red-200' : 'border-slate-200/80'}`}>
                 <div className="flex items-start justify-between gap-3">
@@ -886,32 +936,24 @@ export function PortalDashboard() {
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-2 shrink-0">
-                    <p className="text-lg font-bold text-slate-800">
-                      {formatCurrency(inv.total, inv.currency)}
-                    </p>
+                    <p className="text-lg font-bold text-slate-800">{formatCurrency(inv.total, inv.currency)}</p>
                     <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${STATUS_PILLS[inv.status] ?? STATUS_PILLS.draft}`}>
                       {inv.status}
                     </span>
                   </div>
                 </div>
-
-                {/* Payment links */}
                 {['sent','overdue'].includes(inv.status) && (inv.stripe_payment_link || inv.razorpay_payment_link) && (
                   <div className="mt-4 pt-4 border-t border-slate-100 flex items-center gap-3 flex-wrap">
                     <p className="text-xs text-slate-500 font-medium">Pay now:</p>
                     {inv.stripe_payment_link && (
-                      <a
-                        href={inv.stripe_payment_link} target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors"
-                      >
+                      <a href={inv.stripe_payment_link} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors">
                         <CreditCard className="h-3.5 w-3.5" />Pay with Stripe (USD)
                       </a>
                     )}
                     {inv.razorpay_payment_link && (
-                      <a
-                        href={inv.razorpay_payment_link} target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-sky-600 text-white hover:bg-sky-700 transition-colors"
-                      >
+                      <a href={inv.razorpay_payment_link} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-sky-600 text-white hover:bg-sky-700 transition-colors">
                         <CreditCard className="h-3.5 w-3.5" />Pay with Razorpay (INR)
                       </a>
                     )}
@@ -927,13 +969,11 @@ export function PortalDashboard() {
           <div className="space-y-4">
             <h2 className="text-lg font-bold text-slate-800">Communication History</h2>
 
-            {/* Meetings */}
             {meetings.length > 0 && (
               <div className="bg-white border border-slate-200/80 rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-100">
                   <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                    <Video className="h-4 w-4 text-blue-500" />
-                    Meetings
+                    <Video className="h-4 w-4 text-blue-500" />Meetings
                   </h3>
                 </div>
                 <div className="divide-y divide-slate-50">
@@ -960,10 +1000,8 @@ export function PortalDashboard() {
                             <p className="text-xs text-slate-500 mt-1.5 bg-slate-50 rounded-lg p-2 line-clamp-3">{m.notes}</p>
                           )}
                           {m.video_link && !isPast && (
-                            <a
-                              href={m.video_link} target="_blank" rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline mt-1.5"
-                            >
+                            <a href={m.video_link} target="_blank" rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline mt-1.5">
                               <ExternalLink className="h-3 w-3" />Join meeting
                             </a>
                           )}
@@ -975,13 +1013,11 @@ export function PortalDashboard() {
               </div>
             )}
 
-            {/* Activities */}
             {activities.length > 0 && (
               <div className="bg-white border border-slate-200/80 rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-100">
                   <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                    <Activity className="h-4 w-4 text-violet-500" />
-                    Activities
+                    <Activity className="h-4 w-4 text-violet-500" />Activities
                   </h3>
                 </div>
                 <div className="divide-y divide-slate-50">
@@ -994,14 +1030,11 @@ export function PortalDashboard() {
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-slate-800 truncate">{a.title}</p>
-                          {a.description && (
-                            <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">{a.description}</p>
-                          )}
+                          {a.description && <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">{a.description}</p>}
                           <p className="text-[11px] text-slate-400 mt-1">
                             {a.due_date
                               ? format(new Date(a.due_date), 'MMM d, yyyy')
-                              : format(new Date(a.created_at), 'MMM d, yyyy')
-                            }
+                              : format(new Date(a.created_at), 'MMM d, yyyy')}
                           </p>
                         </div>
                         <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold shrink-0 ${STATUS_PILLS[a.status] ?? STATUS_PILLS.scheduled}`}>
@@ -1026,13 +1059,11 @@ export function PortalDashboard() {
         {activeTab === 'documents' && (
           <div className="space-y-4">
             <h2 className="text-lg font-bold text-slate-800">Documents</h2>
-
             {documents.length === 0 && (
               <div className="bg-white border border-dashed border-slate-200 rounded-xl p-12 text-center text-slate-400">
                 No documents shared yet.
               </div>
             )}
-
             <div className="bg-white border border-slate-200/80 rounded-xl overflow-hidden">
               <div className="divide-y divide-slate-50">
                 {documents.map(doc => {

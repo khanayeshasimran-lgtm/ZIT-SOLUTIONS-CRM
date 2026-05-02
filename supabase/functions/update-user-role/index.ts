@@ -1,27 +1,7 @@
-/**
- * supabase/functions/update-user-role/index.ts
- *
- * DAY 2 — C5: Move role change from direct Supabase client write (Users.tsx)
- * to a backend Edge Function with server-side admin JWT validation.
- *
- * WHAT THE OLD CODE DID (WRONG):
- *   Users.tsx called supabase.from('profiles').update({ role: newRole }) directly.
- *   Any authenticated user who knew the API could call this endpoint and promote
- *   themselves to admin. The frontend role check (targetUser.id === user.id guard)
- *   is UI-only — it can be bypassed with a direct API call.
- *
- * WHAT THIS FUNCTION DOES (CORRECT):
- *   1. Extracts the caller's JWT — Supabase injects this automatically
- *   2. Reads the caller's role from the profiles table server-side
- *   3. Rejects the request with 403 if caller is not admin
- *   4. Rejects if the caller tries to change their own role (self-demotion/promotion risk)
- *   5. Validates the new role is one of the allowed values
- *   6. Writes the update — only if all checks pass
- *   7. Logs the action to audit_logs
- *
- * DEPLOY:
- *   supabase functions deploy update-user-role
- */
+// supabase/functions/update-user-role/index.ts
+// Accepts companyId + organizationId for client assignments and writes
+// both fields server-side (service role key bypasses RLS).
+// Deploy: supabase functions deploy update-user-role
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -30,162 +10,154 @@ const ALLOWED_ROLES = ['user', 'admin', 'manager', 'investor', 'client'] as cons
 type AppRole = typeof ALLOWED_ROLES[number];
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin':  '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Content-Type':                 'application/json',
 };
 
 serve(async (req: Request) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: corsHeaders });
   }
 
   try {
-    // ── 1. Parse request body ────────────────────────────────────────────────
-    const { targetUserId, newRole } = await req.json() as {
-      targetUserId?: string;
-      newRole?: string;
+    const body = await req.json() as {
+      targetUserId?:   string;
+      newRole?:        string;
+      companyId?:      string | null;      // ← NEW: written to profiles.company_id
+      organizationId?: string | null;      // ← written to profiles.organization_id
     };
+
+    const { targetUserId, newRole, companyId, organizationId } = body;
 
     if (!targetUserId || !newRole) {
       return new Response(
         JSON.stringify({ success: false, error: 'targetUserId and newRole are required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 400, headers: corsHeaders },
       );
     }
 
     if (!ALLOWED_ROLES.includes(newRole as AppRole)) {
       return new Response(
         JSON.stringify({ success: false, error: `Invalid role. Must be one of: ${ALLOWED_ROLES.join(', ')}` }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 400, headers: corsHeaders },
       );
     }
 
-    // ── 2. Build authenticated client from caller's JWT ──────────────────────
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) {
       return new Response(
         JSON.stringify({ success: false, error: 'Missing authorization header' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 401, headers: corsHeaders },
       );
     }
 
-    const supabaseUrl  = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey  = Deno.env.get('SUPABASE_ANON_KEY')!;
-    const serviceKey   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+    const serviceKey  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-    // User client — to verify the caller's identity
-    const userClient = createClient(supabaseUrl, supabaseKey, {
+    const userClient    = createClient(supabaseUrl, supabaseKey, {
       global: { headers: { Authorization: authHeader } },
     });
-
-    // Service client — to perform the privileged write after validation
     const serviceClient = createClient(supabaseUrl, serviceKey);
 
-    // ── 3. Identify the caller ───────────────────────────────────────────────
+    // Identify caller
     const { data: { user: caller }, error: authError } = await userClient.auth.getUser();
     if (authError || !caller) {
       return new Response(
         JSON.stringify({ success: false, error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 401, headers: corsHeaders },
       );
     }
 
-    // ── 4. Self-change guard ─────────────────────────────────────────────────
     if (caller.id === targetUserId) {
       return new Response(
         JSON.stringify({ success: false, error: 'You cannot change your own role' }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 403, headers: corsHeaders },
       );
     }
 
-    // ── 5. Verify caller is admin (server-side — cannot be spoofed) ──────────
-    const { data: callerProfile, error: profileError } = await serviceClient
+    // Verify caller is admin
+    const { data: callerProfile } = await serviceClient
       .from('profiles')
       .select('role, organization_id')
       .eq('id', caller.id)
       .single();
 
-    if (profileError || !callerProfile) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Could not verify caller permissions' }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    if (callerProfile.role !== 'admin') {
+    if (!callerProfile || callerProfile.role !== 'admin') {
       return new Response(
         JSON.stringify({ success: false, error: 'Only admins can change user roles' }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 403, headers: corsHeaders },
       );
     }
 
-    // ── 6. Verify target user is in the same organization ───────────────────
-    const { data: targetProfile, error: targetError } = await serviceClient
+    // Fetch target profile
+    const { data: targetProfile } = await serviceClient
       .from('profiles')
-      .select('role, organization_id, email')
+      .select('role, organization_id')
       .eq('id', targetUserId)
       .single();
 
-    if (targetError || !targetProfile) {
+    if (!targetProfile) {
       return new Response(
         JSON.stringify({ success: false, error: 'Target user not found' }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 404, headers: corsHeaders },
       );
     }
 
-    // Cross-org role change attempt
-    if (targetProfile.organization_id !== callerProfile.organization_id) {
+    // Cross-org guard — exempt client assignments (clients are always external)
+    const isClientAssignment = newRole === 'client';
+    const targetHasNoOrg     = targetProfile.organization_id === null;
+    const targetInSameOrg    = targetProfile.organization_id === callerProfile.organization_id;
+
+    if (!isClientAssignment && !targetHasNoOrg && !targetInSameOrg) {
       return new Response(
         JSON.stringify({ success: false, error: 'Cannot change role of a user in a different organization' }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 403, headers: corsHeaders },
       );
     }
 
-    // No-op guard — role is already what was requested
-    if (targetProfile.role === newRole) {
-      return new Response(
-        JSON.stringify({ success: true, message: 'Role unchanged — already set to ' + newRole }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    // Build update payload
+    // For client role: write role + company_id + organization_id all at once,
+    // server-side, bypassing RLS. This is the only place these get written.
+    const updatePayload: Record<string, unknown> = { role: newRole };
+
+    if (isClientAssignment) {
+      updatePayload.company_id      = companyId      ?? null;
+      updatePayload.organization_id = organizationId ?? null;
     }
 
-    // ── 7. Perform the update ────────────────────────────────────────────────
     const { error: updateError } = await serviceClient
       .from('profiles')
-      .update({ role: newRole as AppRole })
+      .update(updatePayload)
       .eq('id', targetUserId);
 
     if (updateError) {
       return new Response(
         JSON.stringify({ success: false, error: updateError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 500, headers: corsHeaders },
       );
     }
 
-    // ── 8. Audit log ─────────────────────────────────────────────────────────
-    await serviceClient.from('audit_logs').insert({
-      action:     'CHANGE_ROLE',
-      entity:     'user_management',
-      entity_id:  targetUserId,
-      user_email: caller.email,
-      // Include old → new role in a structured way for audit trail clarity
-    }).catch(() => { /* audit failure must not block the response */ });
+    // Audit log
+    try {
+      await serviceClient.from('audit_logs').insert({
+        action:     'CHANGE_ROLE',
+        entity:     'user_management',
+        entity_id:  targetUserId,
+        user_email: caller.email,
+        details:    JSON.stringify({ previousRole: targetProfile.role, newRole, companyId }),
+      });
+    } catch (_) { /* audit failure must never block the response */ }
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        message: `Role updated to ${newRole}`,
-        previousRole: targetProfile.role,
-        newRole,
-      }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ success: true, message: `Role updated to ${newRole}`, previousRole: targetProfile.role, newRole }),
+      { status: 200, headers: corsHeaders },
     );
 
-  } catch (err: any) {
-    return new Response(
-      JSON.stringify({ success: false, error: err.message ?? 'Internal server error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Internal server error';
+    return new Response(JSON.stringify({ success: false, error: message }), { status: 500, headers: corsHeaders });
   }
 });
